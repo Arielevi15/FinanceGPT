@@ -1,0 +1,39 @@
+# ── Secrets & API keys ──────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+secrets.json
+*.key
+*.pem
+
+# ── Streamlit secrets ────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ── Personal data (watchlist, analyses) ─────────────────────────────────────
+favorites.json
+stock_analyses.json
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+*.log.*
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

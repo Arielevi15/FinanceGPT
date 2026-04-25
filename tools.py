@@ -2026,3 +2026,694 @@ def get_watchlist_quote(ticker: str) -> dict:
         }
     except Exception:
         return {"ticker": ticker, "error": "fetch failed"}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# HOT SECTORS — sector universe + dynamic scanner
+# ════════════════════════════════════════════════════════════════════════════
+
+# Curated stock universe per sector (8-10 liquid names each)
+SECTOR_UNIVERSE: dict[str, dict] = {
+    "🤖 Tech & AI":        {"etf": "XLK",  "stocks": ["NVDA","MSFT","AAPL","META","GOOGL","AVGO","ORCL","CRM","AMZN","AMD"]},
+    "🔬 Semiconductors":   {"etf": "SOXX", "stocks": ["NVDA","AMD","AVGO","QCOM","AMAT","KLAC","LRCX","MU","TXN","ASML"]},
+    "🛡️ Defense & Space":  {"etf": "ITA",  "stocks": ["LMT","RTX","NOC","GD","BA","RKLB","ASTS","HII","LDOS","SAIC"]},
+    "💊 Healthcare":       {"etf": "XLV",  "stocks": ["LLY","UNH","ABBV","TMO","MRK","JNJ","ISRG","ABT","DHR","SYK"]},
+    "🧬 Biotech":          {"etf": "XBI",  "stocks": ["MRNA","REGN","GILD","VRTX","BIIB","ALNY","BMRN","INCY","SRPT","EXAS"]},
+    "⚡ Energy":           {"etf": "XLE",  "stocks": ["XOM","CVX","COP","SLB","EOG","OXY","MPC","PSX","VLO","HAL"]},
+    "🏦 Financials":       {"etf": "XLF",  "stocks": ["JPM","GS","BAC","MS","WFC","BLK","V","MA","AXP","C"]},
+    "🛒 Consumer":         {"etf": "XLY",  "stocks": ["AMZN","TSLA","HD","MCD","COST","NKE","SBUX","LOW","TGT","CMG"]},
+    "☁️ Cloud & SaaS":    {"etf": "WCLD", "stocks": ["CRM","NOW","SNOW","DDOG","CRWD","NET","ZS","MDB","BILL","HUBS"]},
+    "📡 Communication":    {"etf": "XLC",  "stocks": ["META","GOOGL","NFLX","DIS","SPOT","TMUS","CMCSA","T","VZ","CHTR"]},
+    "🏭 Industrials":      {"etf": "XLI",  "stocks": ["GE","CAT","HON","DE","UNP","FDX","UPS","EMR","ITW","MMM"]},
+    "🔋 Clean Energy":     {"etf": "ICLN", "stocks": ["ENPH","FSLR","NEE","PLUG","BE","RUN","SEDG","ARRY","CWEN","AES"]},
+}
+
+# Hardcoded short names to avoid slow .info calls per-ticker
+_TICKER_NAMES: dict[str, str] = {
+    "NVDA":"NVIDIA","MSFT":"Microsoft","AAPL":"Apple","META":"Meta","GOOGL":"Alphabet",
+    "AVGO":"Broadcom","ORCL":"Oracle","CRM":"Salesforce","AMZN":"Amazon","AMD":"AMD",
+    "QCOM":"Qualcomm","AMAT":"Applied Materials","KLAC":"KLA Corp","LRCX":"Lam Research",
+    "MU":"Micron","TXN":"Texas Instruments","ASML":"ASML",
+    "LMT":"Lockheed Martin","RTX":"RTX Corp","NOC":"Northrop Grumman","GD":"General Dynamics",
+    "BA":"Boeing","RKLB":"Rocket Lab","ASTS":"AST SpaceMobile","HII":"HII","LDOS":"Leidos","SAIC":"SAIC",
+    "LLY":"Eli Lilly","UNH":"UnitedHealth","ABBV":"AbbVie","TMO":"Thermo Fisher",
+    "MRK":"Merck","JNJ":"J&J","ISRG":"Intuitive Surgical","ABT":"Abbott","DHR":"Danaher","SYK":"Stryker",
+    "MRNA":"Moderna","REGN":"Regeneron","GILD":"Gilead","VRTX":"Vertex","BIIB":"Biogen",
+    "ALNY":"Alnylam","BMRN":"BioMarin","INCY":"Incyte","SRPT":"Sarepta","EXAS":"Exact Sciences",
+    "XOM":"ExxonMobil","CVX":"Chevron","COP":"ConocoPhillips","SLB":"SLB","EOG":"EOG Resources",
+    "OXY":"Occidental","MPC":"Marathon Petroleum","PSX":"Phillips 66","VLO":"Valero","HAL":"Halliburton",
+    "JPM":"JPMorgan","GS":"Goldman Sachs","BAC":"Bank of America","MS":"Morgan Stanley",
+    "WFC":"Wells Fargo","BLK":"BlackRock","V":"Visa","MA":"Mastercard","AXP":"Amex","C":"Citigroup",
+    "TSLA":"Tesla","HD":"Home Depot","MCD":"McDonald's","COST":"Costco","NKE":"Nike",
+    "SBUX":"Starbucks","LOW":"Lowe's","TGT":"Target","CMG":"Chipotle",
+    "NOW":"ServiceNow","SNOW":"Snowflake","DDOG":"Datadog","CRWD":"CrowdStrike",
+    "NET":"Cloudflare","ZS":"Zscaler","MDB":"MongoDB","BILL":"Bill.com","HUBS":"HubSpot",
+    "NFLX":"Netflix","DIS":"Disney","SPOT":"Spotify","TMUS":"T-Mobile",
+    "CMCSA":"Comcast","T":"AT&T","VZ":"Verizon","CHTR":"Charter",
+    "GE":"GE Aerospace","CAT":"Caterpillar","HON":"Honeywell","DE":"John Deere",
+    "UNP":"Union Pacific","FDX":"FedEx","UPS":"UPS","EMR":"Emerson","ITW":"Illinois Tool","MMM":"3M",
+    "ENPH":"Enphase","FSLR":"First Solar","NEE":"NextEra","PLUG":"Plug Power",
+    "BE":"Bloom Energy","RUN":"Sunrun","SEDG":"SolarEdge","ARRY":"Array Technologies",
+    "CWEN":"Clearway Energy","AES":"AES Corp",
+}
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_technical_indicators
+# ---------------------------------------------------------------------------
+
+def get_technical_indicators(ticker: str) -> dict:
+    """
+    Advanced technical indicators beyond basic RSI/SMA:
+      - MACD (line, signal, histogram) — trend momentum
+      - SMA-20 — short-term trend
+      - Volume analysis: up-day vs down-day volume ratio (accumulation/distribution)
+      - Weinstein Stage (1/2/3/4) based on SMA slopes and price position
+      - RSI divergence detection (bullish/bearish)
+    """
+    ticker = ticker.strip().upper()
+    try:
+        hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
+        if hist.empty or len(hist) < 30:
+            return {"error": "Insufficient price history for technical indicators."}
+
+        close  = hist["Close"]
+        volume = hist["Volume"]
+
+        # ── SMA-20 ────────────────────────────────────────────────────────────
+        sma20 = round(float(close.rolling(20).mean().iloc[-1]), 2) if len(close) >= 20 else None
+
+        # ── MACD (12/26/9) ───────────────────────────────────────────────────
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line   = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        histogram   = macd_line - signal_line
+
+        macd_val    = round(float(macd_line.iloc[-1]),   4)
+        signal_val  = round(float(signal_line.iloc[-1]), 4)
+        hist_val    = round(float(histogram.iloc[-1]),   4)
+        hist_prev   = round(float(histogram.iloc[-2]),   4) if len(histogram) >= 2 else None
+
+        macd_cross = "none"
+        if len(macd_line) >= 2:
+            if macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]:
+                macd_cross = "bullish_cross"
+            elif macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]:
+                macd_cross = "bearish_cross"
+            elif macd_val > signal_val:
+                macd_cross = "bullish"
+            else:
+                macd_cross = "bearish"
+
+        histogram_expanding = None
+        if hist_prev is not None:
+            histogram_expanding = abs(hist_val) > abs(hist_prev)
+
+        # ── Volume Analysis — accumulation vs distribution ────────────────────
+        daily_ret = close.pct_change().dropna()
+        vol_aligned = volume.reindex(daily_ret.index)
+
+        up_days   = daily_ret[daily_ret > 0]
+        down_days = daily_ret[daily_ret < 0]
+        up_vol    = vol_aligned[up_days.index].mean()
+        down_vol  = vol_aligned[down_days.index].mean()
+
+        up_vol_avg   = round(float(up_vol),   0)   if not np.isnan(up_vol)   else None
+        down_vol_avg = round(float(down_vol), 0)   if not np.isnan(down_vol) else None
+        vol_ratio_ud = round(up_vol / down_vol, 2) if (up_vol and down_vol and down_vol > 0) else None
+
+        if vol_ratio_ud:
+            if vol_ratio_ud > 1.2:
+                vol_signal = "accumulation"     # more vol on up days → institutions buying
+            elif vol_ratio_ud < 0.8:
+                vol_signal = "distribution"     # more vol on down days → institutions selling
+            else:
+                vol_signal = "neutral"
+        else:
+            vol_signal = "unknown"
+
+        # ── Weinstein Stage ───────────────────────────────────────────────────
+        stage = None
+        stage_desc = None
+        try:
+            sma150 = float(close.rolling(150).mean().iloc[-1]) if len(close) >= 150 else None
+            sma200 = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else None
+            price  = float(close.iloc[-1])
+
+            # Slope: compare SMA-150 now vs 4 weeks ago
+            sma150_series = close.rolling(150).mean()
+            sma200_series = close.rolling(200).mean()
+            sma150_slope = None
+            sma200_slope = None
+            if len(sma150_series.dropna()) >= 20:
+                sma150_slope = float(sma150_series.iloc[-1]) - float(sma150_series.iloc[-20])
+            if len(sma200_series.dropna()) >= 20:
+                sma200_slope = float(sma200_series.iloc[-1]) - float(sma200_series.iloc[-20])
+
+            if sma150 and sma200:
+                if price > sma150 > sma200 and sma150_slope and sma150_slope > 0:
+                    stage = 2
+                    stage_desc = "Stage 2 Uptrend — strong bull trend, price above rising SMAs"
+                elif price < sma150 and price < sma200:
+                    if sma150_slope and sma150_slope < 0:
+                        stage = 4
+                        stage_desc = "Stage 4 Decline — bearish trend, price below falling SMAs"
+                    else:
+                        stage = 1
+                        stage_desc = "Stage 1 Base — consolidation, SMAs flattening out"
+                elif price > sma150 and (sma150_slope and sma150_slope < 0):
+                    stage = 3
+                    stage_desc = "Stage 3 Top — price still high but SMAs starting to roll over"
+                else:
+                    stage = 1
+                    stage_desc = "Stage 1 Base — no clear trend direction"
+        except Exception:
+            pass
+
+        # ── RSI Divergence ────────────────────────────────────────────────────
+        divergence = "none"
+        try:
+            # Use last 20 bars for divergence detection
+            window = 20
+            if len(close) >= window + 14:
+                rsi_series = []
+                for i in range(len(close) - window, len(close)):
+                    rsi_series.append(_calculate_rsi(close.iloc[max(0, i-14):i+1]))
+                rsi_series = [r for r in rsi_series if r is not None]
+
+                if len(rsi_series) >= window:
+                    prices_w = close.iloc[-window:].values
+                    rsi_w    = rsi_series[-window:]
+
+                    price_hl = prices_w[-1] > prices_w[0]   # price making higher high
+                    rsi_hl   = rsi_w[-1]    > rsi_w[0]      # RSI making higher high
+
+                    if price_hl and not rsi_hl:
+                        divergence = "bearish"   # price up, RSI failing → weakness
+                    elif not price_hl and rsi_hl:
+                        divergence = "bullish"   # price down, RSI holding → strength
+        except Exception:
+            pass
+
+        current_price = round(float(close.iloc[-1]), 2)
+
+        return {
+            "ticker":               ticker,
+            "current_price":        current_price,
+            "sma_20":               sma20,
+            "price_vs_sma20_pct":   round((current_price - sma20) / sma20 * 100, 2) if sma20 else None,
+            "macd": {
+                "macd_line":          macd_val,
+                "signal_line":        signal_val,
+                "histogram":          hist_val,
+                "histogram_prev":     hist_prev,
+                "signal":             macd_cross,
+                "histogram_expanding": histogram_expanding,
+            },
+            "volume_analysis": {
+                "avg_up_day_volume":   up_vol_avg,
+                "avg_down_day_volume": down_vol_avg,
+                "up_down_vol_ratio":   vol_ratio_ud,
+                "signal":              vol_signal,
+            },
+            "weinstein_stage": {
+                "stage":       stage,
+                "description": stage_desc,
+            },
+            "rsi_divergence": divergence,
+        }
+
+    except Exception as exc:
+        return {"error": f"get_technical_indicators failed for '{ticker}': {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_options_flow
+# ---------------------------------------------------------------------------
+
+def get_options_flow(ticker: str) -> dict:
+    """
+    Options market snapshot from yfinance:
+      - Put/Call ratio (open interest-based)
+      - Average implied volatility (near-the-money options)
+      - Max Pain level (price at which option buyers lose the most)
+      - Nearest expiration summary
+    """
+    ticker = ticker.strip().upper()
+    try:
+        stock = yf.Ticker(ticker)
+        expirations = stock.options
+        if not expirations:
+            return {"error": "No options data available for this ticker."}
+
+        # Use the nearest expiration with meaningful data
+        chain = None
+        used_exp = None
+        for exp in expirations[:4]:
+            try:
+                c = stock.option_chain(exp)
+                if len(c.calls) > 5 and len(c.puts) > 5:
+                    chain = c
+                    used_exp = exp
+                    break
+            except Exception:
+                continue
+
+        if chain is None:
+            return {"error": "Could not retrieve a valid options chain."}
+
+        calls = chain.calls.copy()
+        puts  = chain.puts.copy()
+
+        # ── Put/Call ratio ────────────────────────────────────────────────────
+        total_call_oi = calls["openInterest"].fillna(0).sum()
+        total_put_oi  = puts["openInterest"].fillna(0).sum()
+        put_call_ratio = round(total_put_oi / total_call_oi, 3) if total_call_oi > 0 else None
+
+        if put_call_ratio:
+            if put_call_ratio > 1.0:
+                pc_signal = "bearish_sentiment"
+            elif put_call_ratio < 0.7:
+                pc_signal = "bullish_sentiment"
+            else:
+                pc_signal = "neutral"
+        else:
+            pc_signal = "unknown"
+
+        # ── Implied Volatility (near-the-money) ───────────────────────────────
+        current_price = float(stock.history(period="2d")["Close"].iloc[-1])
+        atm_range = current_price * 0.05  # within 5% of current price
+
+        atm_calls = calls[abs(calls["strike"] - current_price) <= atm_range]
+        atm_puts  = puts[abs(puts["strike"]  - current_price) <= atm_range]
+        atm_all   = pd.concat([atm_calls, atm_puts])
+
+        avg_iv = None
+        if not atm_all.empty and "impliedVolatility" in atm_all.columns:
+            iv_vals = atm_all["impliedVolatility"].dropna()
+            if len(iv_vals) > 0:
+                avg_iv = round(float(iv_vals.mean()) * 100, 2)  # as %
+
+        # ── Max Pain ──────────────────────────────────────────────────────────
+        max_pain = None
+        try:
+            strikes = sorted(set(calls["strike"].tolist() + puts["strike"].tolist()))
+            pain_at = {}
+            for s in strikes:
+                call_pain = calls[calls["strike"] < s].apply(
+                    lambda row: (s - row["strike"]) * row["openInterest"], axis=1
+                ).sum()
+                put_pain = puts[puts["strike"] > s].apply(
+                    lambda row: (row["strike"] - s) * row["openInterest"], axis=1
+                ).sum()
+                pain_at[s] = call_pain + put_pain
+            if pain_at:
+                max_pain = min(pain_at, key=pain_at.get)
+        except Exception:
+            pass
+
+        # ── Top OI strikes ────────────────────────────────────────────────────
+        top_call_strikes = (
+            calls.nlargest(3, "openInterest")[["strike", "openInterest"]]
+            .to_dict("records") if not calls.empty else []
+        )
+        top_put_strikes = (
+            puts.nlargest(3, "openInterest")[["strike", "openInterest"]]
+            .to_dict("records") if not puts.empty else []
+        )
+
+        return {
+            "ticker":            ticker,
+            "expiration_used":   used_exp,
+            "current_price":     round(current_price, 2),
+            "put_call_ratio":    put_call_ratio,
+            "pc_signal":         pc_signal,
+            "avg_implied_vol_pct": avg_iv,
+            "max_pain":          round(float(max_pain), 2) if max_pain else None,
+            "max_pain_vs_price_pct": round((float(max_pain) - current_price) / current_price * 100, 2)
+                                     if max_pain else None,
+            "top_call_oi_strikes": top_call_strikes,
+            "top_put_oi_strikes":  top_put_strikes,
+            "total_call_oi":     int(total_call_oi),
+            "total_put_oi":      int(total_put_oi),
+        }
+
+    except Exception as exc:
+        return {"error": f"get_options_flow failed for '{ticker}': {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_insider_transactions
+# ---------------------------------------------------------------------------
+
+def get_insider_transactions(ticker: str) -> dict:
+    """
+    Fetch recent insider transactions (SEC Form 4) via yfinance:
+      - Last 10 transactions: insider name, title, transaction type, shares, value
+      - 6-month summary: net shares bought/sold, unique insiders, dominant action
+    """
+    ticker = ticker.strip().upper()
+    try:
+        stock = yf.Ticker(ticker)
+        trans = stock.insider_transactions
+
+        if trans is None or (hasattr(trans, "empty") and trans.empty):
+            return {"error": "No insider transaction data available."}
+
+        df = trans.copy()
+
+        # Normalise column names (yfinance changes them occasionally)
+        df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+
+        # Keep last 6 months
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=180)
+        if "start_date" in df.columns:
+            date_col = "start_date"
+        elif "date" in df.columns:
+            date_col = "date"
+        else:
+            date_col = df.columns[0]
+
+        df[date_col] = pd.to_datetime(df[date_col], utc=True, errors="coerce")
+        recent = df[df[date_col] >= cutoff].copy()
+
+        if recent.empty:
+            recent = df.head(10)  # fallback: just return most recent regardless of date
+
+        # Shares column
+        shares_col = next((c for c in df.columns if "share" in c), None)
+        value_col  = next((c for c in df.columns if "value" in c), None)
+        text_col   = next((c for c in df.columns if "text" in c or "transaction" in c), None)
+        insider_col = next((c for c in df.columns if "insider" in c or "name" in c), None)
+        title_col   = next((c for c in df.columns if "title" in c or "position" in c), None)
+
+        # Build last 10 transactions list
+        transactions = []
+        for _, row in recent.head(10).iterrows():
+            tx = {
+                "date":    str(row.get(date_col, ""))[:10],
+                "insider": str(row.get(insider_col, "N/A")) if insider_col else "N/A",
+                "title":   str(row.get(title_col,  "N/A")) if title_col  else "N/A",
+                "type":    str(row.get(text_col,   "N/A")) if text_col   else "N/A",
+                "shares":  int(row.get(shares_col, 0))     if shares_col else None,
+                "value":   round(float(row.get(value_col, 0)), 0) if value_col else None,
+            }
+            transactions.append(tx)
+
+        # 6-month summary
+        buys  = recent[recent[text_col].str.contains("Purchase|Buy|Acquire", case=False, na=False)] if text_col else pd.DataFrame()
+        sells = recent[recent[text_col].str.contains("Sale|Sell|Dispose",   case=False, na=False)] if text_col else pd.DataFrame()
+
+        net_shares_bought = int(buys[shares_col].fillna(0).sum())  if (not buys.empty  and shares_col) else 0
+        net_shares_sold   = int(sells[shares_col].fillna(0).sum()) if (not sells.empty and shares_col) else 0
+        net_shares        = net_shares_bought - net_shares_sold
+
+        dominant = "net_buying" if net_shares > 0 else ("net_selling" if net_shares < 0 else "neutral")
+
+        unique_insiders = len(recent[insider_col].unique()) if insider_col else None
+
+        return {
+            "ticker":             ticker,
+            "period":             "last_6_months",
+            "transactions":       transactions,
+            "summary": {
+                "net_shares_bought": net_shares_bought,
+                "net_shares_sold":   net_shares_sold,
+                "net_shares":        net_shares,
+                "dominant_action":   dominant,
+                "unique_insiders":   unique_insiders,
+                "buy_transactions":  len(buys),
+                "sell_transactions": len(sells),
+            },
+        }
+
+    except Exception as exc:
+        return {"error": f"get_insider_transactions failed for '{ticker}': {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_balance_sheet_deep
+# ---------------------------------------------------------------------------
+
+def get_balance_sheet_deep(ticker: str) -> dict:
+    """
+    Deep balance sheet and cash flow analysis:
+      - EBITDA, Free Cash Flow (OCF - CapEx)
+      - Cash & equivalents, total debt, net debt
+      - Cash runway (quarters at current burn rate)
+      - Interest coverage ratio (EBIT / interest expense)
+      - EV/EBITDA, P/S ratio
+      - Gross margin, operating margin trends (last 4 quarters)
+    """
+    ticker = ticker.strip().upper()
+    try:
+        stock = yf.Ticker(ticker)
+        info  = stock.info or {}
+
+        # ── Annual financials ─────────────────────────────────────────────────
+        try:
+            income_annual  = stock.income_stmt
+            cashflow_annual = stock.cashflow
+            balance_annual  = stock.balance_sheet
+        except Exception:
+            income_annual = cashflow_annual = balance_annual = None
+
+        def _safe_val(df, row_key, col_idx=0):
+            """Safely extract a value from a financial DataFrame."""
+            if df is None or df.empty:
+                return None
+            matching = [r for r in df.index if row_key.lower() in str(r).lower()]
+            if not matching:
+                return None
+            try:
+                val = df.loc[matching[0]].iloc[col_idx]
+                return None if pd.isna(val) else float(val)
+            except Exception:
+                return None
+
+        # ── EBITDA ────────────────────────────────────────────────────────────
+        ebitda = info.get("ebitda") or _safe_val(income_annual, "EBITDA")
+
+        # Manual EBITDA: EBIT + D&A
+        if not ebitda:
+            ebit  = _safe_val(income_annual, "EBIT") or _safe_val(income_annual, "Operating Income")
+            da    = _safe_val(cashflow_annual, "Depreciation")
+            ebitda = (ebit + da) if (ebit and da) else None
+
+        # ── Free Cash Flow ────────────────────────────────────────────────────
+        fcf = info.get("freeCashflow")
+        if not fcf:
+            ocf   = _safe_val(cashflow_annual, "Operating Cash Flow") or _safe_val(cashflow_annual, "Total Cash From Operating Activities")
+            capex = _safe_val(cashflow_annual, "Capital Expenditure") or _safe_val(cashflow_annual, "Capital Expenditures")
+            if capex and capex > 0:
+                capex = -capex  # capex is usually negative in yfinance
+            fcf = (ocf + capex) if (ocf is not None and capex is not None) else None
+
+        # ── Balance Sheet items ───────────────────────────────────────────────
+        cash_raw       = info.get("totalCash") or _safe_val(balance_annual, "Cash And Cash Equivalents")
+        total_debt_raw = info.get("totalDebt") or _safe_val(balance_annual, "Total Debt")
+        net_debt       = (total_debt_raw - cash_raw) if (total_debt_raw and cash_raw) else None
+
+        # ── Cash runway ───────────────────────────────────────────────────────
+        runway_quarters = None
+        if cash_raw and fcf and fcf < 0:
+            quarterly_burn = abs(fcf) / 4
+            if quarterly_burn > 0:
+                runway_quarters = round(cash_raw / quarterly_burn, 1)
+
+        # ── Interest Coverage ─────────────────────────────────────────────────
+        interest_coverage = None
+        ebit = _safe_val(income_annual, "EBIT") or _safe_val(income_annual, "Operating Income")
+        interest_exp = _safe_val(income_annual, "Interest Expense")
+        if ebit and interest_exp and interest_exp != 0:
+            interest_coverage = round(abs(ebit / interest_exp), 2)
+
+        # ── Enterprise Value & Ratios ─────────────────────────────────────────
+        market_cap = info.get("marketCap")
+        ev         = info.get("enterpriseValue")
+        if not ev and market_cap and total_debt_raw and cash_raw:
+            ev = market_cap + total_debt_raw - cash_raw
+
+        ev_ebitda = None
+        if ev and ebitda and ebitda > 0:
+            ev_ebitda = round(ev / ebitda, 2)
+
+        revenue = info.get("totalRevenue") or _safe_val(income_annual, "Total Revenue")
+        ps_ratio = None
+        if market_cap and revenue and revenue > 0:
+            ps_ratio = round(market_cap / revenue, 2)
+
+        # ── Quarterly margin trends ───────────────────────────────────────────
+        margin_trend = []
+        try:
+            q_income = stock.quarterly_income_stmt
+            if q_income is not None and not q_income.empty:
+                rev_rows  = [r for r in q_income.index if "revenue" in str(r).lower() and "total" in str(r).lower()]
+                gp_rows   = [r for r in q_income.index if "gross" in str(r).lower()]
+                op_rows   = [r for r in q_income.index if "operating" in str(r).lower() and "income" in str(r).lower()]
+                ni_rows   = [r for r in q_income.index if "net income" in str(r).lower()]
+
+                for col in q_income.columns[:4]:
+                    rev  = float(q_income.loc[rev_rows[0], col])  if rev_rows  else None
+                    gp   = float(q_income.loc[gp_rows[0],  col])  if gp_rows   else None
+                    op   = float(q_income.loc[op_rows[0],  col])  if op_rows   else None
+                    ni   = float(q_income.loc[ni_rows[0],  col])  if ni_rows   else None
+                    entry = {
+                        "quarter":        str(col)[:10],
+                        "gross_margin":   round(gp / rev * 100, 1) if (gp and rev and rev > 0) else None,
+                        "op_margin":      round(op / rev * 100, 1) if (op and rev and rev > 0) else None,
+                        "net_margin":     round(ni / rev * 100, 1) if (ni and rev and rev > 0) else None,
+                    }
+                    margin_trend.append(entry)
+        except Exception:
+            pass
+
+        def _fmt_b(val):
+            """Format large numbers as $XB or $XM."""
+            if val is None:
+                return None
+            if abs(val) >= 1e9:
+                return f"${val/1e9:.2f}B"
+            if abs(val) >= 1e6:
+                return f"${val/1e6:.1f}M"
+            return f"${val:,.0f}"
+
+        return {
+            "ticker":           ticker,
+            "ebitda":           _fmt_b(ebitda),
+            "ebitda_raw":       ebitda,
+            "free_cash_flow":   _fmt_b(fcf),
+            "fcf_raw":          fcf,
+            "cash":             _fmt_b(cash_raw),
+            "total_debt":       _fmt_b(total_debt_raw),
+            "net_debt":         _fmt_b(net_debt),
+            "runway_quarters":  runway_quarters,
+            "interest_coverage": interest_coverage,
+            "ev_ebitda":        ev_ebitda,
+            "ps_ratio":         ps_ratio,
+            "revenue":          _fmt_b(revenue),
+            "market_cap":       _fmt_b(market_cap),
+            "is_self_funding":  fcf > 0 if fcf is not None else None,
+            "margin_trend":     margin_trend,
+        }
+
+    except Exception as exc:
+        return {"error": f"get_balance_sheet_deep failed for '{ticker}': {exc}"}
+
+
+def get_hot_sectors(top_n_sectors: int = 3, stocks_per_sector: int = 3) -> list[dict]:
+    """
+    Identify top-performing sectors vs SPY and return their best stocks.
+
+    Steps:
+      1. Batch-download 3-month closes for all ETFs + stocks in one call.
+      2. Rank sector ETFs by 50-day return vs SPY.
+      3. Within each top sector, rank stocks by 50-day return vs their sector ETF.
+      4. Return top_n_sectors × stocks_per_sector entries with price/RSI/levels.
+
+    Returns list of sector dicts:
+      { sector, etf, etf_return_50d, vs_spy_50d, top_stocks: [...] }
+    """
+    # ── Collect all tickers ──────────────────────────────────────────────────
+    all_etfs    = ["SPY"] + [v["etf"] for v in SECTOR_UNIVERSE.values()]
+    all_stocks  = list({s for v in SECTOR_UNIVERSE.values() for s in v["stocks"]})
+    all_tickers = list(set(all_etfs + all_stocks))
+
+    # ── Batch download ───────────────────────────────────────────────────────
+    try:
+        raw = yf.download(all_tickers, period="3mo", auto_adjust=True,
+                          progress=False, group_by="ticker")
+    except Exception:
+        return []
+
+    # Normalise to a flat DataFrame of closing prices keyed by ticker
+    try:
+        if isinstance(raw.columns, pd.MultiIndex):
+            closes = pd.DataFrame({
+                t: raw[t]["Close"] for t in all_tickers
+                if t in raw and "Close" in raw[t].columns
+            })
+        else:
+            closes = raw[["Close"]].rename(columns={"Close": all_tickers[0]})
+    except Exception:
+        return []
+
+    if closes.empty:
+        return []
+
+    # ── Helper: 50-day return ────────────────────────────────────────────────
+    def _ret50(ticker: str) -> Optional[float]:
+        if ticker not in closes.columns:
+            return None
+        s = closes[ticker].dropna()
+        if len(s) < 52:
+            return None
+        return float((s.iloc[-1] - s.iloc[-52]) / s.iloc[-52] * 100)
+
+    spy_ret = _ret50("SPY")
+    if spy_ret is None:
+        return []
+
+    # ── Rank sectors ────────────────────────────────────────────────────────
+    sector_ranks: list[dict] = []
+    for sector_name, sector_data in SECTOR_UNIVERSE.items():
+        etf_ret = _ret50(sector_data["etf"])
+        if etf_ret is None:
+            continue
+        sector_ranks.append({
+            "sector":         sector_name,
+            "etf":            sector_data["etf"],
+            "etf_return_50d": round(etf_ret, 2),
+            "vs_spy_50d":     round(etf_ret - spy_ret, 2),
+            "stocks":         sector_data["stocks"],
+        })
+
+    top_sectors = sorted(sector_ranks, key=lambda x: x["vs_spy_50d"], reverse=True)[:top_n_sectors]
+
+    # ── For each top sector, rank stocks ─────────────────────────────────────
+    result: list[dict] = []
+    for sector in top_sectors:
+        etf_ret = _ret50(sector["etf"]) or 0.0
+        scored: list[dict] = []
+
+        for ticker in sector["stocks"]:
+            if ticker not in closes.columns:
+                continue
+            s = closes[ticker].dropna()
+            if len(s) < 22:
+                continue
+
+            stock_ret = _ret50(ticker)
+            if stock_ret is None:
+                continue
+
+            price      = round(float(s.iloc[-1]), 2)
+            change_pct = round(float((s.iloc[-1] - s.iloc[-2]) / s.iloc[-2] * 100), 2)
+            rsi        = _calculate_rsi(s)
+            recent20   = s.iloc[-21:]
+            support    = round(float(recent20.min()), 2)
+            resistance = round(float(recent20.max()), 2)
+
+            scored.append({
+                "ticker":       ticker,
+                "company_name": _TICKER_NAMES.get(ticker, ticker),
+                "price":        price,
+                "change_pct":   change_pct,
+                "rsi_14":       round(rsi, 1) if rsi else None,
+                "rs_vs_etf":    round(stock_ret - etf_ret, 2),
+                "return_50d":   round(stock_ret, 2),
+                "support":      support,
+                "resistance":   resistance,
+            })
+
+        scored.sort(key=lambda x: x["rs_vs_etf"], reverse=True)
+        result.append({
+            "sector":         sector["sector"],
+            "etf":            sector["etf"],
+            "etf_return_50d": sector["etf_return_50d"],
+            "vs_spy_50d":     sector["vs_spy_50d"],
+            "top_stocks":     scored[:stocks_per_sector],
+        })
+
+    return result

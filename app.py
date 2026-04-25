@@ -34,11 +34,14 @@ from tools import (
     get_trending_stocks,
     get_economic_calendar,
     get_chart_patterns,
+    get_hot_sectors,
+    get_technical_indicators, get_options_flow,
+    get_insider_transactions, get_balance_sheet_deep,
 )
 from agent import (
     analyze_for_dashboard, handle_chat_query, summarize_transcript,
     summarize_market_news, summarize_portfolio_impact, summarize_screener_results,
-    analyze_calendar_portfolio_impact,
+    analyze_calendar_portfolio_impact, quick_stock_verdict,
 )
 
 # ── optional TradingView TA ──────────────────────────────────────────────────
@@ -364,7 +367,7 @@ div[data-testid="stButton"] button.wl-star {
 # CONSTANTS
 # ════════════════════════════════════════════════════════════════════════════
 WATCHLIST = ["SOFI", "IBIT", "ETHA", "NVDA", "AAPL"]
-ANALYSIS_VERSION = "v10-5step-framework"  # bump to bust analysis cache on prompt changes
+ANALYSIS_VERSION = "v11-4tools-merged-prompt"  # bump to bust analysis cache on prompt changes
 
 _YF_TO_TV = {
     "NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ",
@@ -610,7 +613,9 @@ def fetch_analysis(ticker: str, version: str,
                    _stock_json: str = "", _news_json: str = "",
                    _ta_json: str = "", _video_json: str = "",
                    _fib_json: str = "", _forecast_json: str = "",
-                   _quant_json: str = "", _chart_json: str = "") -> dict:
+                   _quant_json: str = "", _chart_json: str = "",
+                   _tech_ind_json: str = "", _options_json: str = "",
+                   _insider_json: str = "", _bs_deep_json: str = "") -> dict:
     """Cache keyed by ticker + version only — data params excluded (prefix _).
     This prevents a new Sonnet call on every 5-min price tick."""
     return analyze_for_dashboard(
@@ -622,6 +627,10 @@ def fetch_analysis(ticker: str, version: str,
         json.loads(_forecast_json) if _forecast_json else None,
         json.loads(_quant_json)    if _quant_json    else None,
         json.loads(_chart_json)    if _chart_json    else None,
+        json.loads(_tech_ind_json) if _tech_ind_json else None,
+        json.loads(_options_json)  if _options_json  else None,
+        json.loads(_insider_json)  if _insider_json  else None,
+        json.loads(_bs_deep_json)  if _bs_deep_json  else None,
     )
 
 
@@ -1253,6 +1262,301 @@ def _market_clock_html() -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# HOT SECTORS — fetch (24-h cache) + render
+# ════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_hot_sectors() -> list[dict]:
+    """
+    Full pipeline: sector ranking → top stocks → news fetch → Haiku verdicts.
+    Cached for 24 hours — runs at most once per day.
+    5 sectors × 3 stocks = 15 Haiku calls (~$0.025/day).
+    """
+    sectors = get_hot_sectors(top_n_sectors=5, stocks_per_sector=3)
+    for sector in sectors:
+        for stock in sector.get("top_stocks", []):
+            # Fetch relevant headlines for this stock
+            try:
+                news_data  = get_financial_news(
+                    f"{stock['ticker']} {stock['company_name']}", max_results=4
+                )
+                headlines = [
+                    a.get("title", "") for a in news_data.get("articles", [])
+                    if a.get("title")
+                ]
+            except Exception:
+                headlines = []
+
+            verdict = quick_stock_verdict(
+                ticker         = stock["ticker"],
+                company        = stock["company_name"],
+                price          = stock["price"],
+                rsi            = stock.get("rsi_14"),
+                rs_vs_etf      = stock.get("rs_vs_etf", 0),
+                sector         = sector["sector"],
+                support        = stock.get("support", 0),
+                resistance     = stock.get("resistance", 0),
+                news_headlines = headlines,
+            )
+            stock.update(verdict)
+    return sectors
+
+
+def _rec_style(rec: str) -> tuple[str, str]:
+    """Return (text_color, bg_color) for a recommendation badge."""
+    return {
+        "BUY":   ("#3FB950", "#0d2918"),
+        "SELL":  ("#F85149", "#2a0d0d"),
+        "HOLD":  ("#D29922", "#2a1d00"),
+        "WATCH": ("#58A6FF", "#0d1a2e"),
+    }.get(rec.upper(), ("#8B949E", "#1a1a1a"))
+
+
+def _stock_card_html(stock: dict) -> str:
+    """Render a single stock card as HTML."""
+    ticker   = stock.get("ticker", "")
+    company  = stock.get("company_name", "")
+    price    = stock.get("price", 0)
+    chg      = stock.get("change_pct", 0)
+    rsi      = stock.get("rsi_14")
+    rs       = stock.get("rs_vs_etf", 0)
+    ret50    = stock.get("return_50d", 0)
+    support  = stock.get("support", 0)
+    resist   = stock.get("resistance", 0)
+    rec      = stock.get("recommendation", "HOLD")
+    conf     = stock.get("confidence", 5)
+    rationale= stock.get("rationale", "")
+    tgt_pct  = stock.get("target_pct", 0)
+    stp_pct  = stock.get("stop_pct", 0)
+
+    background   = stock.get("background", "")
+    geo_context  = stock.get("geo_context", "")
+    tgt_pct_abs  = abs(tgt_pct)
+    stp_pct_abs  = abs(stp_pct)
+    target_price = round(price * (1 + tgt_pct_abs / 100), 2)
+    stop_price   = round(price * (1 - stp_pct_abs / 100), 2)
+
+    background_html = (
+        f'<div style="margin-top:8px;padding:8px 10px;background:#0d1117;'
+        f'border-radius:6px;border-right:2px solid #58A6FF">'
+        f'<span style="color:#58A6FF;font-size:10px;font-weight:600">📋 רקע · </span>'
+        f'<span style="font-size:11px;color:#8B949E;line-height:1.6">{background}</span>'
+        f'</div>'
+    ) if background else ""
+
+    geo_html = (
+        f'<div style="margin-top:6px;padding:8px 10px;background:#0d1117;'
+        f'border-radius:6px;border-right:2px solid #F0B90B">'
+        f'<span style="color:#F0B90B;font-size:10px;font-weight:600">🌍 גיאופוליטי · </span>'
+        f'<span style="font-size:11px;color:#8B949E;line-height:1.6">{geo_context}</span>'
+        f'</div>'
+    ) if geo_context else ""
+
+    chg_color  = "#3FB950" if chg >= 0 else "#F85149"
+    chg_arrow  = "▲" if chg >= 0 else "▼"
+    rs_color   = "#3FB950" if rs >= 0 else "#F85149"
+    rs_arrow   = "▲" if rs >= 0 else "▼"
+    ret_color  = "#3FB950" if ret50 >= 0 else "#F85149"
+    rec_c, rec_bg = _rec_style(rec)
+
+    rsi_str    = f"{rsi:.0f}" if rsi else "—"
+    rsi_color  = "#F85149" if rsi and rsi > 70 else "#3FB950" if rsi and rsi < 30 else "#C9D1D9"
+
+    conf_dots  = "●" * conf + "○" * (10 - conf)
+
+    return f"""
+<div style="
+    background:linear-gradient(145deg,#0d1117,#161b22);
+    border:1px solid #21262d;
+    border-top:3px solid {rec_c};
+    border-radius:12px;
+    padding:18px 16px;
+    height:100%;
+    direction:rtl;
+    font-family:system-ui,-apple-system,sans-serif;
+">
+  <!-- Header row -->
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
+    <div>
+      <span style="font-size:20px;font-weight:800;color:#E6EDF3;letter-spacing:0.5px">{ticker}</span>
+      <div style="font-size:11px;color:#8B949E;margin-top:2px">{company}</div>
+    </div>
+    <div style="text-align:left">
+      <span style="
+        background:{rec_bg};color:{rec_c};
+        border:1px solid {rec_c};
+        border-radius:6px;padding:3px 10px;
+        font-size:12px;font-weight:700;letter-spacing:0.5px
+      ">{rec}</span>
+      <div style="font-size:10px;color:#8B949E;margin-top:4px;text-align:center">{conf}/10</div>
+    </div>
+  </div>
+
+  <!-- Price row -->
+  <div style="margin:10px 0 8px">
+    <span style="font-size:24px;font-weight:800;color:#E6EDF3;direction:ltr;display:inline-block">${price:,.2f}</span>
+    <span style="font-size:13px;font-weight:600;color:{chg_color};margin-right:8px">
+      {chg_arrow} {abs(chg):.2f}% היום
+    </span>
+  </div>
+
+  <div style="height:1px;background:#21262d;margin:8px 0"></div>
+
+  <!-- Metrics row -->
+  <div style="display:flex;gap:16px;margin:8px 0;font-size:12px">
+    <div>
+      <span style="color:#8B949E">RSI </span>
+      <span style="color:{rsi_color};font-weight:700">{rsi_str}</span>
+    </div>
+    <div>
+      <span style="color:#8B949E">RS vs סקטור </span>
+      <span style="color:{rs_color};font-weight:700">{rs_arrow}{abs(rs):.1f}%</span>
+    </div>
+    <div>
+      <span style="color:#8B949E">50d </span>
+      <span style="color:{ret_color};font-weight:700">{ret50:+.1f}%</span>
+    </div>
+  </div>
+
+  <div style="height:1px;background:#21262d;margin:8px 0"></div>
+
+  <!-- Trade levels -->
+  <div style="display:flex;gap:12px;margin:8px 0;font-size:12px">
+    <div style="flex:1;background:#0d2918;border-radius:6px;padding:6px 8px;text-align:center">
+      <div style="color:#8B949E;font-size:10px;margin-bottom:2px">🎯 יעד</div>
+      <div style="color:#3FB950;font-weight:700">${target_price:,.2f}</div>
+      <div style="color:#3FB950;font-size:10px">+{tgt_pct_abs:.1f}%</div>
+    </div>
+    <div style="flex:1;background:#2a0d0d;border-radius:6px;padding:6px 8px;text-align:center">
+      <div style="color:#8B949E;font-size:10px;margin-bottom:2px">🛑 סטופ</div>
+      <div style="color:#F85149;font-weight:700">${stop_price:,.2f}</div>
+      <div style="color:#F85149;font-size:10px">-{stp_pct_abs:.1f}%</div>
+    </div>
+    <div style="flex:1;background:#161b22;border-radius:6px;padding:6px 8px;text-align:center">
+      <div style="color:#8B949E;font-size:10px;margin-bottom:2px">R:R</div>
+      <div style="color:#C9D1D9;font-weight:700">1:{tgt_pct_abs/stp_pct_abs:.1f}</div>
+    </div>
+  </div>
+
+  <div style="height:1px;background:#21262d;margin:8px 0"></div>
+
+  <!-- Rationale -->
+  <div style="font-size:12px;color:#C9D1D9;line-height:1.6">
+    <span style="color:#8B949E;font-size:10px;font-weight:600">💡 נימוק · </span>{rationale}
+  </div>
+
+  {background_html}
+
+  {geo_html}
+
+  <!-- Confidence dots -->
+  <div style="margin-top:10px;font-size:9px;color:{rec_c};letter-spacing:1px;direction:ltr">
+    {conf_dots}
+  </div>
+</div>"""
+
+
+def tab_hot_sectors() -> None:
+    """Render the 🔥 Hot Sectors tab — fully independent of ticker selection."""
+
+    # ── Page header ──────────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;direction:rtl">'
+        '<span style="font-size:22px">🔥</span>'
+        '<span style="font-size:22px;font-weight:800;color:#E6EDF3">סקטורים חמים</span>'
+        '</div>'
+        '<div style="font-size:12px;color:#8B949E;margin-bottom:20px;direction:rtl">'
+        'TOP 5 סקטורים שמכים את SPY · TOP 3 מניות לפי Relative Strength · רקע וניתוח גיאופוליטי · מתעדכן פעם ביום'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Refresh control ──────────────────────────────────────────────────────
+    col_btn, col_ts, _ = st.columns([1, 2, 5])
+    with col_btn:
+        if st.button("🔄 רענן", key="hot_refresh"):
+            fetch_hot_sectors.clear()
+            st.rerun()
+    with col_ts:
+        st.markdown(
+            f'<div style="color:#8B949E;font-size:11px;padding-top:8px">'
+            f'עודכן: {datetime.now().strftime("%d/%m %H:%M")}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Load data ────────────────────────────────────────────────────────────
+    with st.spinner("⚙ סורק סקטורים וממיין מניות…"):
+        sectors = fetch_hot_sectors()
+
+    if not sectors:
+        st.error("לא ניתן לטעון נתוני סקטורים. בדוק חיבור לאינטרנט.")
+        return
+
+    # ── Sector performance bar ───────────────────────────────────────────────
+    st.markdown(
+        '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:28px">',
+        unsafe_allow_html=True,
+    )
+    badges = ""
+    for i, s in enumerate(sectors):
+        vs   = s["vs_spy_50d"]
+        c    = "#3FB950" if vs >= 0 else "#F85149"
+        sign = "+" if vs >= 0 else ""
+        rank_emoji = ["🥇","🥈","🥉"][i] if i < 3 else "🏅"
+        badges += (
+            f'<div style="background:#0d1117;border:1px solid {c};border-radius:8px;'
+            f'padding:10px 16px;direction:rtl">'
+            f'<span style="font-size:14px">{rank_emoji} {s["sector"]}</span>'
+            f'<span style="font-size:11px;color:#8B949E;margin-right:8px"> {s["etf"]}</span>'
+            f'<span style="font-size:13px;font-weight:700;color:{c}">{sign}{vs:.1f}% vs SPY</span>'
+            f'</div>'
+        )
+    st.markdown(
+        f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:28px">{badges}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Cards per sector ─────────────────────────────────────────────────────
+    for sector in sectors:
+        vs   = sector["vs_spy_50d"]
+        c    = "#3FB950" if vs >= 0 else "#F85149"
+        sign = "+" if vs >= 0 else ""
+
+        # Sector sub-header
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:8px;'
+            f'margin:8px 0 14px;direction:rtl">'
+            f'<div style="width:4px;height:22px;background:{c};border-radius:2px"></div>'
+            f'<span style="font-size:16px;font-weight:700;color:#E6EDF3">'
+            f'{sector["sector"]}</span>'
+            f'<span style="font-size:12px;color:#8B949E">{sector["etf"]} · '
+            f'50d: <span style="color:{c}">{sign}{vs:.1f}% vs SPY</span></span>'
+            f'<div style="flex:1;height:1px;background:#21262d"></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # 3 stock cards in columns
+        cols = st.columns(3, gap="medium")
+        for col, stock in zip(cols, sector.get("top_stocks", [])):
+            with col:
+                st.markdown(_stock_card_html(stock), unsafe_allow_html=True)
+
+        st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
+
+    # ── Disclaimer ───────────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="margin-top:16px;padding:10px 14px;background:#0d1117;'
+        'border-radius:8px;border:1px solid #21262d;direction:rtl">'
+        '<span style="font-size:10px;color:#8B949E">'
+        '⚠️ המידע מיועד למטרות לימודיות בלבד ואינו מהווה ייעוץ השקעות. '
+        'ביצועי עבר אינם מבטיחים תוצאות עתידיות.'
+        '</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
 # TAB — לוח מחוונים (Market Dashboard — landing page)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -3157,8 +3461,9 @@ def main() -> None:
     ticker = render_sidebar()
 
     # ── 3 top-level tabs — Market Dashboard is the landing page ─────────────
-    t_market, t_stock, t_screener, t_calendar, t_chat = st.tabs([
+    t_market, t_hot, t_stock, t_screener, t_calendar, t_chat = st.tabs([
         "🌐 סקירת שוק",
+        "🔥 סקטורים חמים",
         "📈 ניתוח מניה",
         "🔍 סורק NASDAQ",
         "📅 לוח שנה כלכלי",
@@ -3171,6 +3476,12 @@ def main() -> None:
     with t_market:
         market_overview = fetch_market_overview()
         tab_market_overview(market_overview)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB 2 — Hot Sectors (fully independent — no ticker required)
+    # ════════════════════════════════════════════════════════════════════════
+    with t_hot:
+        tab_hot_sectors()
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 2 — Stock Analysis (all ticker-specific content lives here)
@@ -3335,6 +3646,13 @@ def main() -> None:
                     macro_dashboard = fetch_macro_data()
                     chart_data      = fetch_chart_patterns(ticker)
 
+                # ── כלים חדשים: אינדיקטורים טכניים, אופציות, אינסיידרים, מאזן ──
+                with st.spinner("📊 טוען אינדיקטורים מתקדמים…"):
+                    tech_ind_data = get_technical_indicators(ticker)
+                    options_data  = get_options_flow(ticker)
+                    insider_data  = get_insider_transactions(ticker)
+                    bs_deep_data  = get_balance_sheet_deep(ticker)
+
                 # ── הרצת ניתוח AI ─────────────────────────────────────────
                 all_articles = (
                     news_co.get("articles", [])
@@ -3357,13 +3675,17 @@ def main() -> None:
                     analysis = fetch_analysis(
                         ticker,
                         ANALYSIS_VERSION,
-                        _stock_json    = json.dumps(sd,            default=str),
-                        _news_json     = json.dumps(all_articles,  default=str),
-                        _ta_json       = json.dumps(ta_summary,    default=str) if ta_summary else "",
-                        _fib_json      = json.dumps(fib_data,      default=str) if fib_data      and "error" not in fib_data      else "",
-                        _forecast_json = json.dumps(forecast_data, default=str) if forecast_data and "error" not in forecast_data else "",
-                        _quant_json    = json.dumps(quant_data,    default=str) if quant_data    and "error" not in quant_data    else "",
-                        _chart_json    = json.dumps(_slim_chart,   default=str) if _slim_chart else "",
+                        _stock_json    = json.dumps(sd,             default=str),
+                        _news_json     = json.dumps(all_articles,   default=str),
+                        _ta_json       = json.dumps(ta_summary,     default=str) if ta_summary else "",
+                        _fib_json      = json.dumps(fib_data,       default=str) if fib_data      and "error" not in fib_data      else "",
+                        _forecast_json = json.dumps(forecast_data,  default=str) if forecast_data and "error" not in forecast_data else "",
+                        _quant_json    = json.dumps(quant_data,     default=str) if quant_data    and "error" not in quant_data    else "",
+                        _chart_json    = json.dumps(_slim_chart,    default=str) if _slim_chart else "",
+                        _tech_ind_json = json.dumps(tech_ind_data,  default=str) if tech_ind_data and "error" not in tech_ind_data else "",
+                        _options_json  = json.dumps(options_data,   default=str) if options_data  and "error" not in options_data  else "",
+                        _insider_json  = json.dumps(insider_data,   default=str) if insider_data  and "error" not in insider_data  else "",
+                        _bs_deep_json  = json.dumps(bs_deep_data,   default=str) if bs_deep_data  and "error" not in bs_deep_data  else "",
                     )
 
                 # Cache for chat tab

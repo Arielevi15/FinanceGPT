@@ -22,6 +22,8 @@ from tools import (
     get_stock_data, get_financial_news, get_market_indices,
     get_quarterly_earnings, get_chart_patterns,
     calculate_fibonacci_levels, get_quant_metrics,
+    get_technical_indicators, get_options_flow,
+    get_insider_transactions, get_balance_sheet_deep,
 )
 from analysis_logger import log_stock_analysis
 
@@ -47,118 +49,235 @@ MONITOR_MODEL = "claude-haiku-4-5-20251001"  # Lightweight headline screening
 # System prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are **FinanceGPT**, an elite AI financial analyst with deep expertise in:
-- US and Israeli equity markets and macro-economics
-- Technical analysis (moving averages, RSI, volume, support/resistance)
-- Fundamental analysis (valuation multiples, earnings quality, balance sheet health)
-- Geo-political risk assessment, especially for the Middle East and global trade
-- Real-time market monitoring and breaking-news interpretation
+SYSTEM_PROMPT = """You are FinanceGPT — a senior equity research analyst with 20+ years of experience
+across Goldman Sachs, Morgan Stanley, and a multi-billion dollar hedge fund.
+You hold a CFA designation and specialise in fundamental analysis, technical analysis,
+geopolitical risk assessment, and options flow across growth stocks, commodities, and
+geopolitically-sensitive sectors.
 
-## Behavioral Rules
+## Analytical Style
+- Data-driven and intellectually honest — state what you don't know.
+- Distinguish signal from noise; think in probabilities, not certainties.
+- Flag conflicting data instead of hiding it.
+- You present the full analysis; the user makes the final decision.
+- All responses must be in English. Use professional but accessible language.
+- Structure every analysis clearly with headers. When data is uncertain, say so explicitly.
 
-1. **Ticker Analysis** — When the user provides a stock ticker:
-   a. Call `get_stock_data` first to validate the ticker and retrieve fundamentals + technicals.
-   b. Call `get_financial_news` with the company name **and** the ticker for recent company news.
-   c. Call `get_financial_news` again with the sector or a relevant macro/geo-political theme
-      (e.g., "Federal Reserve", "AI chips", "Middle East conflict", "energy prices").
-   d. Call `get_quarterly_earnings` to retrieve the last 4 quarters of EPS actuals vs estimates.
-   e. Call `get_chart_patterns` to detect MA alignment and candlestick patterns.
-   f. Call `calculate_fibonacci_levels` to get precise support/resistance/target levels.
-   g. Call `get_quant_metrics` to measure relative strength vs sector ETF and S&P 500.
-   h. Synthesise all data into a **structured markdown report** with these exact sections:
-      ```
-      ## [TICKER] — [Company Name] Analysis
-      ### TL;DR
-      ### 📊 Technical Overview
-      ### 💰 Fundamental Snapshot
-      ### 📰 Recent News & Sentiment
-      ### 🌍 Geo-political & Macro Context
-      ### ⚖️ Risk Factors
-      ### ⚖️ סנגור מול קטגור  (Bull vs Bear Case)
-      ### 🎯 Summary & Outlook
-      ```
+---
 
-   i. **Data placement rules** — integrate the new tools into existing sections (do NOT create new sections):
-      - **📊 Technical Overview**: append after RSI/SMA analysis:
-        - Chart patterns detected (from `get_chart_patterns`): MA alignment, golden/death cross, candlestick patterns.
-        - Fibonacci levels (from `calculate_fibonacci_levels`): list the nearest support and resistance levels with prices.
-        - Relative Strength (from `get_quant_metrics`): RS score vs sector ETF and vs S&P 500, beta, Sharpe ratio. State explicitly if the stock is outperforming or underperforming its sector.
-        - End with: **"Daily: [bullish/bearish/neutral] | Weekly: [bullish/bearish/neutral]"**
-      - **💰 Fundamental Snapshot**: append after P/E/ROE/margin data:
-        - Earnings trend (from `get_quarterly_earnings`): show a mini table of last 4 quarters — EPS actual vs estimate vs surprise %. Note if the company is on a beat/miss streak.
+## 1. TICKER ANALYSIS — Tool Sequence
 
-   j. In the **Bull vs Bear Case** section, structure it as follows:
-      - **🟢 סנגור (Bull Case):** 3-4 bullet points — the strongest arguments FOR buying this stock.
-      - **🔴 קטגור (Bear Case):** 3-4 bullet points — the strongest arguments AGAINST.
-      - **⚖️ Verdict:** Your final recommendation (BUY / SELL / HOLD) with entry price, stop-loss, and price target derived from your technical analysis.
-      - **🏦 Wall Street Consensus:** Show `analyst_recommendation`, `analyst_target_price`, `analyst_count`, and `analyst_upside_pct` from the data.
-        Then explicitly state whether your verdict **AGREES**, **PARTIALLY AGREES**, or **DISAGREES** with Wall Street consensus, and explain why in 1-2 sentences.
-        If `analyst_count` is low (< 5), note that the consensus is thin and less reliable.
+When the user provides a stock ticker, call tools in this order:
 
-2. **Market Summary** — When asked for a market update or indices:
-   a. Call `get_market_indices` to get live index levels.
-   b. Call `get_financial_news` with "market" to get macro headlines.
-   c. Produce a cohesive US vs Israeli market comparison, highlight key sector drivers,
-      note any geo-political events affecting Israel or global markets.
+a. `get_stock_data` — fundamentals, price, SMAs, RSI, analyst consensus (ALWAYS first)
+b. `get_financial_news(company_name_or_ticker)` — company-specific news
+c. `get_financial_news(sector_or_macro_theme)` — sector / geopolitical context
+d. `get_quarterly_earnings` — last 4 quarters EPS actuals vs estimates
+e. `get_balance_sheet_deep` — EBITDA, FCF, cash runway, EV/EBITDA, P/S, margin trends
+f. `get_chart_patterns` — MA alignment, candlestick patterns, golden/death cross
+g. `get_technical_indicators` — MACD, SMA-20, volume analysis, Weinstein Stage, RSI divergence
+h. `calculate_fibonacci_levels` — precise support/resistance/target levels
+i. `get_quant_metrics` — RS vs sector ETF and SPY, Sharpe ratio, Beta, POC
+j. `get_options_flow` — Put/Call ratio, implied volatility, Max Pain
+k. `get_insider_transactions` — Form 4 insider buy/sell activity (last 6 months)
 
-3. **General questions** — Answer using your financial expertise; call tools if fresh data helps.
+Then synthesise all data into this exact report structure:
 
-## Decision Framework — BUY / SELL / HOLD Criteria
+```
+## [TICKER] — [Company Name] | [Date]
+### TL;DR
+### 📊 Technical Analysis
+### 💰 Fundamental Analysis
+### 🏦 Balance Sheet & Valuation
+### 📈 Sentiment & Options Flow
+### 📰 News & Catalyst Calendar
+### 🌍 Geopolitical & Macro Analysis
+### ⚖️ Bull vs Bear Case (סנגור מול קטגור)
+### 🎯 Executive Summary & Trade Setup
+```
 
-Use these objective criteria to anchor your verdict. No single rule overrides judgment, but each adds conviction points.
+---
 
-### Bullish signals (each = +1 conviction point)
+## 2. SECTION CONTENT RULES
+
+### 📊 Technical Analysis
+- **Trend Structure**: price vs SMA-20/50/150/200. Weinstein Stage (from `get_technical_indicators`).
+  State: price above/below each SMA with % distance.
+- **Momentum**: RSI(14) above/below 50? RSI divergence (bullish/bearish) from `get_technical_indicators`.
+  MACD: line vs signal, histogram expanding/contracting, last cross signal.
+- **Volume**: up-day vs down-day volume ratio (accumulation or distribution). Flag any unusual spikes.
+- **Chart Patterns**: MA alignment, candlestick patterns, golden/death cross (from `get_chart_patterns`).
+- **Fibonacci Levels**: nearest support and resistance prices (from `calculate_fibonacci_levels`).
+- **Relative Strength**: RS vs sector ETF and SPY, Sharpe ratio (from `get_quant_metrics`).
+  State explicitly: outperforming or underperforming sector.
+- End with: **Daily: [bullish/bearish/neutral] | Weekly: [bullish/bearish/neutral]**
+
+### 💰 Fundamental Analysis
+- Revenue growth (YoY, QoQ): accelerating or decelerating? Quality: recurring vs one-time?
+- Profitability: gross margin, operating margin, net margin — trend from `get_balance_sheet_deep`.
+- EPS trajectory (from `get_quarterly_earnings`): mini table of last 4 quarters — actual vs estimate vs surprise %.
+  Note beat/miss streak. Guidance credibility.
+- Competitive position: moat (patents, network effects, switching costs), market share trend.
+
+### 🏦 Balance Sheet & Valuation
+- Cash & debt: cash position, total debt, net debt, cash runway in quarters (from `get_balance_sheet_deep`).
+- Self-funding: is FCF positive? EBITDA margin.
+- Interest coverage ratio. D/E vs sector peers.
+- Valuation: P/E, Forward P/E, PEG, EV/EBITDA, P/S vs sector peers. DCF sanity check if applicable.
+- Analyst consensus: target price (low/avg/high), recommendation, analyst count, implied upside %.
+  Note if consensus is thin (< 5 analysts).
+
+### 📈 Sentiment & Options Flow
+- Options: Put/Call ratio with interpretation, average IV%, Max Pain level vs current price (from `get_options_flow`).
+  Flag IV crush risk if earnings are near.
+- Top OI strikes: where are calls and puts concentrated?
+- Insider transactions (from `get_insider_transactions`): net buying or selling in last 6 months.
+  Name key insiders if available. Net buying by officers/directors is a bullish signal.
+- Institutional ownership % (from `get_stock_data`).
+
+### 📰 News & Catalyst Calendar
+- Top 5 recent headlines with sentiment (bullish/bearish/neutral per item).
+- Upcoming catalysts: next earnings date, consensus EPS/revenue expectations, avg historical reaction %.
+  Sector-specific catalysts (FDA dates, product launches, government contracts).
+- Macro calendar: next Fed meeting, CPI/PPI, jobs report — any near-term market-moving events.
+- For each major catalyst: probability of positive outcome (%), expected price impact ±%.
+- Timing guidance: enter BEFORE or AFTER the catalyst? Flag binary risk events explicitly.
+
+### 🌍 Geopolitical & Macro Analysis
+- Where does the company manufacture? Customer geography. Supply chain vulnerabilities.
+- Tariff exposure: % of COGS from tariff-affected regions. Pricing power to pass through costs.
+- Policy tailwinds/headwinds: current administration stance, pending legislation (IRA, CHIPs Act, etc.).
+- Macro sensitivities: rate sensitivity, USD strength impact, commodity input costs.
+- Israel-specific flag (if applicable): ILS/USD FX impact, Middle East conflict exposure, R&D center risk.
+- Scenario analysis: bull case geopolitical tailwind vs bear case escalation/policy reversal.
+
+### ⚖️ Bull vs Bear Case
+- **🟢 Bull Case (סנגור):** 3-4 bullet points — strongest arguments FOR the stock.
+- **🔴 Bear Case (קטגור):** 3-4 bullet points — strongest arguments AGAINST.
+- **⚖️ Verdict:** BUY / HOLD / SELL with conviction score (use Decision Framework below).
+- **🏦 Wall Street Consensus:** Show analyst_recommendation, analyst_target_price, analyst_count, analyst_upside_pct.
+  State explicitly: AGREES / PARTIALLY AGREES / DISAGREES with Wall Street, and why in 1-2 sentences.
+
+### 🎯 Executive Summary & Trade Setup
+
+End every analysis with this block:
+
+**ONE-LINER**: [Single sentence: what the company does and why it matters right now]
+
+**OVERALL VERDICT**:
+- STRONG SETUP — high conviction, all signals aligned
+- MODERATE SETUP — mixed signals, selective entry
+- WAIT & WATCH — setup not ready, monitor for trigger
+- AVOID — too many red flags, unfavorable R:R
+
+**SCORECARD**:
+| Dimension         | Score (1-5) | Key Finding           |
+|-------------------|-------------|----------------------|
+| Fundamentals      | X/5         | [one-line summary]   |
+| Technical         | X/5         | [one-line summary]   |
+| Balance Sheet     | X/5         | [one-line summary]   |
+| Sentiment/Options | X/5         | [one-line summary]   |
+| Geopolitics/Macro | X/5         | [one-line summary]   |
+| Catalyst Setup    | X/5         | [one-line summary]   |
+| TOTAL             | XX/30       |                      |
+
+**TRADE SETUP TABLE**:
+| Level         | Price | Notes                          |
+|---------------|-------|-------------------------------|
+| Entry (aggr.) | $X    | Near support / SMA touch       |
+| Entry (cons.) | $X    | Above confirmed breakout       |
+| Stop Loss     | $X    | Below key support/SMA          |
+| Target 1      | $X    | Next resistance level          |
+| Target 2      | $X    | Extended move / analyst target |
+| R:R Ratio     | 1:X   | Must be > 1:2 to be valid      |
+
+**Timeframe**: Swing (X–X weeks) / Position (X–X months)
+**Position Size**: Risk no more than 1% of portfolio. At X% stop, max position = Y% of portfolio.
+
+---
+
+## 3. DECISION FRAMEWORK — BUY / SELL / HOLD Criteria
+
+Each signal below adds or subtracts one conviction point.
+
+### Bullish signals (+1 each)
 - RSI < 45 and turning upward (oversold recovery)
-- Price > SMA-50 > SMA-200 (bullish MA alignment)
-- Price within 3% of SMA-50 support in an uptrend (buyable pullback)
-- Volume ratio > 1.5x on an up day (institutional accumulation)
-- Forward P/E < trailing P/E (earnings growth expected)
+- Price > SMA-50 > SMA-200 (bullish MA alignment, Stage 2)
+- Price within 3% of SMA-50 in an uptrend (buyable pullback)
+- Volume accumulation signal (up-day volume > down-day volume by 20%+)
+- MACD bullish cross or histogram expanding above zero
+- Forward P/E < trailing P/E (earnings acceleration expected)
 - PEG < 1.0 (undervalued relative to growth)
+- FCF positive and growing (self-funding company)
+- Insider net buying in last 6 months
+- Put/Call ratio < 0.7 (bullish options sentiment)
 - analyst_recommendation = "buy" or "strong_buy"
 - analyst_upside_pct > 15%
-- Short % of float > 15% + positive catalyst (short squeeze setup)
 
-### Bearish signals (each = −1 conviction point)
-- RSI > 70 (overbought, momentum likely to fade)
-- Price < SMA-50 < SMA-200 (bearish MA alignment)
-- Volume ratio > 1.5x on a down day (institutional distribution)
+### Bearish signals (−1 each)
+- RSI > 70 (overbought, momentum fading)
+- Price < SMA-50 < SMA-200 (Stage 4 decline)
+- Volume distribution signal (down-day volume > up-day volume by 20%+)
+- MACD bearish cross or histogram contracting below zero
+- RSI bearish divergence (price higher, RSI lower)
 - Profit margin negative or deteriorating QoQ
+- FCF negative with < 4 quarters runway
 - D/E > 2.0 in a rising-rate environment
+- Interest coverage < 2.0 (debt servicing risk)
+- Insider net selling by officers/directors
+- Put/Call ratio > 1.0 (bearish options sentiment)
 - analyst_recommendation = "sell" or "underperform"
-- analyst_upside_pct < 0% (consensus sees downside)
+- analyst_upside_pct < 0%
 
 ### Verdict thresholds
-- **+3 or more** → BUY (or STRONG BUY if +5)
-- **−1 to +2** → HOLD
-- **−2 or lower** → SELL (or STRONG SELL if −4)
+- **+5 or more** → STRONG BUY
+- **+2 to +4** → BUY
+- **−1 to +1** → HOLD
+- **−2 to −4** → SELL
+- **−5 or lower** → STRONG SELL
 
-## Risk / Reward Rules — MANDATORY
+---
 
-Every Verdict **must** include a valid trade setup. Do not give a recommendation without these:
+## 4. RISK / REWARD RULES — MANDATORY
 
-1. **Entry price** — current price or a specific limit level (e.g., "on a pull-back to SMA-50 at $X")
-2. **Stop-loss** — below nearest support, SMA, or a fixed % (max 8% below entry for swing trades)
-3. **Price target** — nearest resistance, Fibonacci extension, or analyst consensus target
-4. **R:R ratio** — must be at least **1:2** (reward ≥ 2× risk). If R:R < 1:2, downgrade the recommendation by one level (BUY → HOLD, HOLD → SELL).
-5. **Position size guidance** — "Risk no more than 1% of portfolio on this trade. At a X% stop, max position = Y% of portfolio."
+Every verdict must include a valid trade setup:
+1. **Entry price** — current or a specific limit level (e.g., "pullback to SMA-50 at $X")
+2. **Stop-loss** — below nearest support/SMA (max 8% below entry for swing trades)
+3. **Price target** — nearest resistance, Fibonacci extension, or analyst target
+4. **R:R ratio** — must be ≥ 1:2. If R:R < 1:2, downgrade one level (BUY → HOLD, HOLD → SELL).
+5. **Position size** — "Risk no more than 1% of portfolio. At X% stop, max position = Y%."
 
-## Multi-Timeframe Obligation
+---
 
-For every ticker analysis, comment on **both** timeframes using the data already fetched:
-- **Daily** — RSI, SMA-50, recent candle action (short-term entry timing)
-- **Weekly** — price vs SMA-200, 52-week range position (macro trend direction)
+## 5. MULTI-TIMEFRAME OBLIGATION
 
-State explicitly: *"Daily: [bullish/bearish/neutral] | Weekly: [bullish/bearish/neutral]"*
-A trade is only HIGH CONVICTION when daily and weekly agree.
+For every ticker, explicitly state:
+- **Daily**: RSI, SMA-20/50, MACD, recent volume action → short-term entry timing
+- **Weekly**: price vs SMA-200, 52-week range position → macro trend direction
 
-## Output Style
-- Use **markdown** with headers, bullet points, and bold key numbers.
-- Always show percentage changes (e.g., "+2.4%", "-0.8%").
-- Flag RSI > 70 as overbought, RSI < 30 as oversold.
-- Interpret price vs SMA-50/SMA-200 for trend direction.
+Format: **Daily: [bullish/bearish/neutral] | Weekly: [bullish/bearish/neutral]**
+HIGH CONVICTION only when daily and weekly agree.
+
+---
+
+## 6. OTHER REQUEST TYPES
+
+**Market Summary** — When asked for a market update:
+  a. Call `get_market_indices` for live index levels.
+  b. Call `get_financial_news("market")` for macro headlines.
+  c. Produce US vs Israeli market comparison, highlight sector drivers and geopolitical events.
+
+**General questions** — Answer using financial expertise; call tools if fresh data helps.
+
+---
+
+## 7. OUTPUT STYLE
+- Markdown with headers, bullet points, bold key numbers.
+- Always show percentage changes: "+2.4%", "−0.8%".
+- Flag RSI > 70 as ⚠️ Overbought, RSI < 30 as 🔻 Oversold.
 - Be specific with numbers; avoid vague language.
-- Keep TL;DR to 2-3 sentences max.
-- If data is missing or a ticker is invalid, say so clearly and stop.
+- TL;DR: 2-3 sentences maximum.
+- If data is missing or ticker invalid, say so clearly and stop.
 """
 
 # ---------------------------------------------------------------------------
@@ -298,6 +417,69 @@ TOOLS_SCHEMA = [
             "required": ["ticker"],
         },
     },
+    {
+        "name": "get_technical_indicators",
+        "description": (
+            "Advanced technical indicators for a ticker: MACD (line/signal/histogram + cross signal), "
+            "SMA-20, volume accumulation/distribution analysis (up-day vs down-day volume ratio), "
+            "Weinstein Stage (1–4), and RSI divergence detection (bullish/bearish). "
+            "Call during every ticker analysis to enrich the Technical Overview section."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Stock ticker symbol."}
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_options_flow",
+        "description": (
+            "Options market snapshot: Put/Call ratio (bullish if <0.7, bearish if >1.0), "
+            "average implied volatility % for near-the-money options, Max Pain level, "
+            "and top open-interest strikes for calls and puts. "
+            "Use in the Sentiment & Options section of every analysis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Stock ticker symbol."}
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_insider_transactions",
+        "description": (
+            "SEC Form 4 insider transactions for the last 6 months: individual buy/sell records "
+            "(insider name, title, shares, value, date) plus a net summary (net buying or selling). "
+            "Use in the Institutional & Insider section. Net buying by officers/directors is bullish."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Stock ticker symbol."}
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_balance_sheet_deep",
+        "description": (
+            "Deep balance sheet and cash flow analysis: EBITDA, Free Cash Flow, cash position, "
+            "total debt, net debt, cash runway (quarters), interest coverage ratio, "
+            "EV/EBITDA, P/S ratio, and quarterly gross/operating/net margin trends (last 4 quarters). "
+            "Use in the Fundamental Snapshot — Balance Sheet and Valuation sub-sections."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Stock ticker symbol."}
+            },
+            "required": ["ticker"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -327,6 +509,14 @@ def dispatch_tool(name: str, inputs: dict) -> str:
             )
         elif name == "get_quant_metrics":
             result = get_quant_metrics(inputs["ticker"])
+        elif name == "get_technical_indicators":
+            result = get_technical_indicators(inputs["ticker"])
+        elif name == "get_options_flow":
+            result = get_options_flow(inputs["ticker"])
+        elif name == "get_insider_transactions":
+            result = get_insider_transactions(inputs["ticker"])
+        elif name == "get_balance_sheet_deep":
+            result = get_balance_sheet_deep(inputs["ticker"])
         else:
             result = {"error": f"Unknown tool: '{name}'"}
     except Exception as exc:
@@ -600,15 +790,27 @@ STEP 5 — THE FINAL VERDICT:
 
 == MA DISTANCES (1-Year Daily Chart) ==
 {chart_json}
+
+== ADVANCED TECHNICAL INDICATORS (MACD, Volume Analysis, Weinstein Stage, RSI Divergence) ==
+{tech_ind_json}
+
+== OPTIONS FLOW (Put/Call Ratio, Implied Volatility, Max Pain) ==
+{options_json}
+
+== INSIDER TRANSACTIONS (Form 4 — last 6 months) ==
+{insider_json}
+
+== DEEP BALANCE SHEET (EBITDA, FCF, Cash Runway, EV/EBITDA, P/S, Margin Trends) ==
+{bs_deep_json}
 {video_section}
 
 Return EXACTLY this JSON structure (all text fields in Hebrew):
 {{
-  "technical_map": "<5-line Hebrew summary — one line per step:\n• 🌍 מאקרו: [sector trend + relative strength vs SPY]\n• 📊 פונדמנטלי: [P/E vs growth, EPS surprise, valuation verdict]\n• 📈 טכני: [MA state + exact distances + active pattern]\n• 📰 קטליסטים: [next earnings date + news vibe in 1 sentence]\n• 🏆 ורדיקט: [BUY/SELL/HOLD + Confidence X/10 + suggested position size]>",
-  "bull_thesis": "<【הסנגור】3-4 משפטים: ציין RS rating ומה הוא מסמל, מחיר ביחס ל-POC (תמיכה/התנגדות), Sharpe Ratio כמדד יעילות, פריצה טכנית (Cup&Handle/VCP/Base), מגמת EPS חיובית>",
-  "bear_thesis": "<【הקטגור】3-4 משפטים: ציין Beta ורמת הסיכון, ביצועי הסקטור ביחס ל-SPY, סיכון פריצת ה-POC כלפי מטה, בועה סטטיסטית אם רלוונטי, חדשות שליליות>",
-  "quant_audit": "<【ביקורת קוואנט】3-4 משפטים: RS {rs_50d}d / RS Rating / Beta / Sharpe — האם האותות מסכימים? ציין מרחק מ-SMA_44 ו-SMA_150 בפורמט: 'המניה נמצאת במרחק של X% מממוצע 150, מה שמעיד על נקודת כניסה אסטרטגית.' זהה דפוס: Bullish Stack / Support Test / Mean Reversion. confluence פיבונאצ'י+SMA? אמינות Monte Carlo R²>",
-  "judge_verdict": "<【פסק הדין】3-4 משפטים: סינתזה של RS+Beta+Sharpe+Fib. נמק את הכיוון. ציין גודל פוזיציה ומדוע. ציין תרחיש שישנה את הדעה>",
+  "technical_map": "<6-line Hebrew summary — one line per step:\n• 🌍 מאקרו: [sector trend + relative strength vs SPY]\n• 📊 פונדמנטלי: [P/E vs growth, EPS surprise, EBITDA/FCF verdict]\n• 📈 טכני: [MA state + MACD signal + Weinstein Stage + RSI divergence]\n• 💧 סנטימנט: [Put/Call ratio + insider activity signal]\n• 📰 קטליסטים: [next earnings date + news vibe in 1 sentence]\n• 🏆 ורדיקט: [BUY/SELL/HOLD + Confidence X/10 + suggested position size]>",
+  "bull_thesis": "<【הסנגור】4-5 משפטים: ציין RS rating + MACD bullish cross אם רלוונטי + Weinstein Stage 2 אם רלוונטי, מחיר ביחס ל-POC + Max Pain אם תומך, Sharpe Ratio + FCF חיובי אם קיים, פריצה טכנית (Cup&Handle/VCP/Base), מגמת EPS + insider buying אם קיים>",
+  "bear_thesis": "<【הקטגור】4-5 משפטים: ציין Beta + Put/Call Ratio אם דובי, ביצועי הסקטור ביחס ל-SPY, FCF שלילי + runway קצר אם רלוונטי, RSI divergence שלילי אם קיים, insider selling אם קיים, חדשות שליליות>",
+  "quant_audit": "<【ביקורת קוואנט】4-5 משפטים: RS {rs_50d}d / RS Rating / Beta / Sharpe — האם האותות מסכימים? MACD: signal + histogram expanding/contracting. Volume: accumulation/distribution. ציין Weinstein Stage. Put/Call Ratio: bullish/bearish/neutral. ציין מרחק מ-SMA_44 ו-SMA_150. confluence פיבונאצ'י+SMA?>",
+  "judge_verdict": "<【פסק הדין】4-5 משפטים: סינתזה של RS+Beta+Sharpe+Fib+MACD+insider+options. נמק את הכיוון. ציין גודל פוזיציה ומדוע. ציין Max Pain ביחס למחיר. ציין תרחיש שישנה את הדעה>",
   "position_sizing": "<X% מהתיק — נמק לפי Beta={beta}/RS={rs_rating}/Sharpe={sharpe}>",
   "trade_plan": {{
     "entry": <number>,
@@ -648,6 +850,10 @@ def analyze_for_dashboard(
     forecast_data: dict | None = None,
     quant_data: dict | None = None,
     chart_patterns: dict | None = None,
+    tech_indicators: dict | None = None,
+    options_flow: dict | None = None,
+    insider_transactions: dict | None = None,
+    balance_sheet_deep: dict | None = None,
 ) -> dict:
     """
     Single Claude Sonnet call that returns a structured analysis dict for
@@ -763,6 +969,54 @@ def analyze_for_dashboard(
     for token, value in _pv.items():
         prompt = prompt.replace(token, value)
 
+    # Slim tech indicators — keep only key fields to save tokens
+    slim_tech: dict | str = "לא זמין"
+    if tech_indicators and "error" not in tech_indicators:
+        slim_tech = {
+            "sma_20":          tech_indicators.get("sma_20"),
+            "price_vs_sma20":  tech_indicators.get("price_vs_sma20_pct"),
+            "macd":            tech_indicators.get("macd"),
+            "volume_signal":   tech_indicators.get("volume_analysis", {}).get("signal"),
+            "up_down_vol_ratio": tech_indicators.get("volume_analysis", {}).get("up_down_vol_ratio"),
+            "weinstein_stage": tech_indicators.get("weinstein_stage"),
+            "rsi_divergence":  tech_indicators.get("rsi_divergence"),
+        }
+
+    # Slim options flow
+    slim_options: dict | str = "לא זמין"
+    if options_flow and "error" not in options_flow:
+        slim_options = {
+            "put_call_ratio":      options_flow.get("put_call_ratio"),
+            "pc_signal":           options_flow.get("pc_signal"),
+            "avg_iv_pct":          options_flow.get("avg_implied_vol_pct"),
+            "max_pain":            options_flow.get("max_pain"),
+            "max_pain_vs_price":   options_flow.get("max_pain_vs_price_pct"),
+            "top_call_strikes":    options_flow.get("top_call_oi_strikes"),
+            "top_put_strikes":     options_flow.get("top_put_oi_strikes"),
+        }
+
+    # Slim insider transactions
+    slim_insider: dict | str = "לא זמין"
+    if insider_transactions and "error" not in insider_transactions:
+        slim_insider = insider_transactions.get("summary", {})
+        slim_insider["recent"] = insider_transactions.get("transactions", [])[:5]
+
+    # Slim balance sheet deep
+    slim_bs: dict | str = "לא זמין"
+    if balance_sheet_deep and "error" not in balance_sheet_deep:
+        slim_bs = {
+            "ebitda":            balance_sheet_deep.get("ebitda"),
+            "free_cash_flow":    balance_sheet_deep.get("free_cash_flow"),
+            "is_self_funding":   balance_sheet_deep.get("is_self_funding"),
+            "cash":              balance_sheet_deep.get("cash"),
+            "net_debt":          balance_sheet_deep.get("net_debt"),
+            "runway_quarters":   balance_sheet_deep.get("runway_quarters"),
+            "interest_coverage": balance_sheet_deep.get("interest_coverage"),
+            "ev_ebitda":         balance_sheet_deep.get("ev_ebitda"),
+            "ps_ratio":          balance_sheet_deep.get("ps_ratio"),
+            "margin_trend":      balance_sheet_deep.get("margin_trend", [])[:4],
+        }
+
     # Step 2: substitute the large data blocks using a safe delimiter approach
     # (replace the named placeholders that may contain arbitrary text/braces)
     _data = {
@@ -772,6 +1026,10 @@ def analyze_for_dashboard(
         "{ta_json}":          json.dumps(ta_summary or {}, default=str, ensure_ascii=False),
         "{fib_forecast_json}": json.dumps(fib_forecast,  default=str, ensure_ascii=False) if fib_forecast else "לא זמין",
         "{chart_json}":        json.dumps(slim_chart,    default=str, ensure_ascii=False) if isinstance(slim_chart, dict) else slim_chart,
+        "{tech_ind_json}":     json.dumps(slim_tech,     default=str, ensure_ascii=False) if isinstance(slim_tech, dict) else slim_tech,
+        "{options_json}":      json.dumps(slim_options,  default=str, ensure_ascii=False) if isinstance(slim_options, dict) else slim_options,
+        "{insider_json}":      json.dumps(slim_insider,  default=str, ensure_ascii=False) if isinstance(slim_insider, dict) else slim_insider,
+        "{bs_deep_json}":      json.dumps(slim_bs,       default=str, ensure_ascii=False) if isinstance(slim_bs, dict) else slim_bs,
         "{video_section}":    video_section,
     }
     for token, value in _data.items():
@@ -782,7 +1040,7 @@ def analyze_for_dashboard(
 
     _FALLBACK = {
         # ── Judicial Multi-Agent Protocol fields ──
-        "technical_map": "• 🌍 מאקרו: נתונים אינם זמינים\n• 📊 פונדמנטלי: נתונים אינם זמינים\n• 📈 טכני: נתונים אינם זמינים\n• 📰 קטליסטים: נתונים אינם זמינים\n• 🏆 ורדיקט: נתונים אינם זמינים",
+        "technical_map": "• 🌍 מאקרו: נתונים אינם זמינים\n• 📊 פונדמנטלי: נתונים אינם זמינים\n• 📈 טכני: נתונים אינם זמינים\n• 💧 סנטימנט: נתונים אינם זמינים\n• 📰 קטליסטים: נתונים אינם זמינים\n• 🏆 ורדיקט: נתונים אינם זמינים",
         "bull_thesis": "הסנגור אינו זמין כרגע.",
         "bear_thesis": "הקטגור אינו זמין כרגע.",
         "quant_audit": "ביקורת הנתונים אינה זמינה כרגע.",
@@ -1414,3 +1672,89 @@ def analyze_calendar_portfolio_impact(events: list[dict]) -> str:
         return resp.content[0].text.strip()
     except Exception as exc:
         return f"• שגיאה בניתוח לוח שנה כלכלי: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Hot Sectors — lightweight Haiku verdict per stock card
+# ---------------------------------------------------------------------------
+
+_VERDICT_FALLBACK = {
+    "recommendation": "HOLD",
+    "rationale":      "נתונים לא זמינים כרגע.",
+    "confidence":     5,
+    "target_pct":     5.0,
+    "stop_pct":       3.0,
+}
+
+def quick_stock_verdict(
+    ticker: str,
+    company: str,
+    price: float,
+    rsi: float | None,
+    rs_vs_etf: float,
+    sector: str,
+    support: float,
+    resistance: float,
+    news_headlines: list[str] | None = None,
+) -> dict:
+    """
+    Lightweight Claude Haiku call that returns a concise stock verdict
+    for the Hot Sectors card view.
+
+    Returns:
+        {recommendation, rationale, background, geo_context,
+         confidence 1-10, target_pct (upside%), stop_pct (downside%)}
+    """
+    rsi_str  = f"{rsi:.1f}" if rsi else "N/A"
+    upside   = round((resistance - price) / price * 100, 1) if resistance > price else 5.0
+    downside = round((price - support)    / price * 100, 1) if support < price    else 3.0
+
+    headlines_block = ""
+    if news_headlines:
+        headlines_block = "\nRecent headlines:\n" + "\n".join(
+            f"• {h}" for h in news_headlines[:4]
+        )
+
+    prompt = (
+        f"Stock: {ticker} ({company}) | Sector: {sector}\n"
+        f"Price: ${price} | RSI-14: {rsi_str} | RS vs sector ETF (50d): {rs_vs_etf:+.1f}%\n"
+        f"20-day Support: ${support} | 20-day Resistance: ${resistance}\n"
+        f"Potential upside: {upside:.1f}% | Downside to support: {downside:.1f}%"
+        f"{headlines_block}\n\n"
+        f"As an elite financial analyst, reply ONLY with valid JSON:\n"
+        f'{{"recommendation":"BUY|SELL|HOLD|WATCH",'
+        f'"rationale":"<one sentence in Hebrew: key technical/fundamental reason>",'
+        f'"background":"<1-2 sentences in Hebrew: what the company does and why it matters in {sector}>",'
+        f'"geo_context":"<1-2 sentences in Hebrew: current geopolitical or macro tailwind/headwind for this stock>",'
+        f'"confidence":<1-10>,'
+        f'"target_pct":<positive number: % upside to target>,'
+        f'"stop_pct":<positive number: % downside to stop>}}'
+    )
+
+    try:
+        resp = client.messages.create(
+            model=MONITOR_MODEL,
+            max_tokens=350,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text.strip()
+        text = re.sub(r"^```+(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```+$", "", text)
+        data = json.loads(text)
+        return {
+            "recommendation": data.get("recommendation", "HOLD"),
+            "rationale":      data.get("rationale",    ""),
+            "background":     data.get("background",   ""),
+            "geo_context":    data.get("geo_context",  ""),
+            "confidence":     int(data.get("confidence", 5)),
+            "target_pct":     abs(float(data.get("target_pct", upside))),
+            "stop_pct":       abs(float(data.get("stop_pct",   downside))),
+        }
+    except Exception:
+        return {
+            **_VERDICT_FALLBACK,
+            "background":  "",
+            "geo_context": "",
+            "target_pct":  upside,
+            "stop_pct":    downside,
+        }
